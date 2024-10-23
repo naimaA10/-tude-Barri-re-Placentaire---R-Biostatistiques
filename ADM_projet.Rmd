@@ -1,0 +1,624 @@
+---
+title: "M1BI - ADM : examen d'analyse de données massives"
+subtitle: "Partie II"
+author: "Analyse d'un jeu de composés franchissant ou non la membrane placentaire"
+date: "9 février 2023"
+fontsize: 12pt
+geometry: margin=0.7in
+output:
+  html_document:
+    df_print: paged
+    highlight: haddock
+    theme: yeti
+    toc: yes
+    toc_depth: 5
+    number_sections: yes
+  pdf_document:
+    df_print: kable
+    fig_height: 6
+    fig_width: 7
+    highlight: pygments
+    number_sections: yes
+    toc: yes
+    toc_depth: 5
+    keep_tex: TRUE
+  word_document:
+    toc: no
+    highlight: pygments
+    keep_md: yes
+    reference_docx: modele.exam.docx
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# set this option in the first code chunk in the document
+knitr::opts_chunk$set(echo = TRUE,         # FALSE ou TRUE
+                      results = 'markup',     # markup ou hide
+                      fig.show = 'asis',    # asis ou hide
+                      warning = FALSE,
+                      eval = TRUE)
+###!!! à modifier
+seed = 121
+###!!! fin
+set.seed(seed)
+```
+
+```{r fonction, include = FALSE}
+tx.bienPredit <- function(confusion) {
+  return((confusion[1,1] + confusion[2,2]) / sum(confusion))
+}
+sensibilite <- function(confusion) {
+  return((confusion[2,2]) / (confusion[2,2] + confusion[1,2]))
+}
+specificite <- function(confusion) {
+  return((confusion[1,1]) / (confusion[1,1] + confusion[2,1]))
+}
+mcc <- function(confusion) {
+  num <- confusion[2,2] * confusion[1,1] - confusion[2,1] * confusion[1,2]
+  den <- (confusion[2,2] + confusion[2,1]) * (confusion[2,2] + confusion[1,2]) *
+    (confusion[1,1] + confusion[2,1]) * (confusion[1,1] + confusion[1,2])
+  toReturn <- num / sqrt(den)
+  return(toReturn)
+}
+```
+
+# Introduction
+
+## Consignes sur le déroulé
+
+Un numéro de compte et deux sujets à traiter vous ont été fournis. Ils sont à respecter pour les deux parties de l'examen.
+
+### Partie I : écriture d'un script d'analyse
+
+Dans la première partie, nous vous fournissons seulement les données, **"toExam.txt"**
+
+- nous vous demandons d'écrire un script d'analyse d'analyse de ces données en utilisant les deux méthodes qui vous ont été attribuées
+- et de nous rendre un fichier au format Rmarkdown, nommé "NOM-prenom_ADM_M1-parcoursX_partieI.Rmd"
+
+Cette première partie dure 2 heures.
+
+### Partie II : analyse multivariée et commentaires 
+
+Dans la deuxième partie, nous vous fournissons un script d'analyse global **"exam_ADM_M1BI_2022-2023.Rmd"**. Normalement, vous ne devriez pas avoir à ajouter de commande.
+
+- nous vous demandons de 
+
+  * faire une introduction explicitant votre démarche d'analyse de ces données
+  * commenter les sorties obtenues à l'aide du script fourni
+  * écrire une conclusion sur ce que ces deux analyses vous ont apporté sur la compréhension des données et sur le modèle calculé. 
+  * vous pouvez, faire un commentaire sur comment ces deux méthodes se complètent ou non, quels sont leurs avantages et inconvénients, en général et ici en particulier.
+  
+- et nous rendre un fichier au format Rmarkdown, nommé "NOM-prenom_ADM_M1-parcoursX_partieII.Rmd"
+
+**rq :** *parcours* et *NOM-prenom* sont à modifier
+
+## Pour rappel, les méthodes vues sont :
+
+* méthodes non supervisées: 
+
+  - classification hiérarchique, `hclust()`
+  - classification par kmeans, `kmeans()`
+  - Analyse en Composante Principale, `PCA(FactoMineR)`
+  
+* méthodes  supervisées :
+
+  - régression linéaire multiple, `lm()`
+  - régression logistique multiple, `glm(, family = "binomial")`
+  - arbres de classification, `rpart(rpart)`
+  
+## Vous pouvez utiliser les librairies suivantes :
+
+```{r librairies, echo = TRUE}
+library(caret)
+library(rpart)
+library(randomForest)
+library(FactoMineR)
+library(corrplot)
+library(pROC)
+library(rpart.plot)
+```
+
+# Les données
+
+Nous souhaitons évaluer si une relation quantitative structure-activité (QSAR) peut être mise en place efficacement pour prédire le transport de médicaments et de produits chimiques à travers la barrière placentaire humaine sur la base de leurs propriétés moléculaires, physico-chimiques et structurelles. Nous vous proposons donc de développer différentes méthodes d'analyse multivariée pour prédire la clairance `Cl` ou `Cl_prc`. La clairance, variable `Cl` quantitative, mesure la capacité qu'a ou non un composé à franchir la membrane placentaire. C'est un réel compris entre 0 et 1, en théorie. La clairance, variable `Cl_prc` qualitative, est définie comme suit :
+
+- 0, si $Cl < 0.5$, le composé ne passe pas la membrane placentaire
+- 1, si $Cl \geq 0.5$, le composé franchit la membrane placentaire.
+
+
+```{r lecture, eval = TRUE}
+load("toExam.Rdata")
+data_original <- data_exam
+```
+
+Le jeu de données "toExam.txt" contient un ensemble de 93 descripteurs physico-chimiques calculés à l'aide du logiciel MOE pour 91 molécules-médicaments, et leur clairance. Les premières lignes/colonnes du jeu de données se présentent sous la forme suivante :
+
+```{r intro, eval = TRUE, results='asis'}
+knitr::kable(data_exam[1:6, 1:6])
+```
+
+Les variables à prédire (`Cl` = réel ou `Cl_prc` = clairance 0/1) sont donc les deux premières colonnes de notre jeu de données.  Les colonnes 3 à 95 sont les descripteurs de MOE.
+Les noms des composés étudiés permettent de nommer les lignes de votre `data.frame`.
+
+# Analyse du jeu de données
+
+## Nettoyage des données
+
+```{r}
+sum(is.na(data_exam))
+```
+
+```{r}
+X <- data_exam[, 3:ncol(data_exam)]
+X_var <- apply(X, MARGIN = 2, FUN = var)
+summary(X_var)
+hist(X_var)
+boxplot(X_var)
+sum(X_var == 0)
+to_rm <- which(X_var == 0)
+colnames(X)[to_rm]
+to_keep <- which(X_var != 0)
+```
+
+```{r}
+data_exam <- data_exam[, c(1:2, to_keep + 2)]
+```
+
+```{r}
+## !!!! à modifier
+seuil=0.95
+## !!!! fin 
+X <- data_exam[, 3:ncol(data_exam)]
+X_cor <- cor(X)
+corrplot(X_cor, tl.cex = 0.5)
+findCorrelation(X_cor, names = TRUE, cutoff = seuil)
+to_rm <- findCorrelation(X_cor, names = FALSE, cutoff = seuil)
+nb_descr <- ncol(X)
+to_keep <- setdiff(1:nb_descr, to_rm)
+data_exam <- data_exam[, c(1:2, to_keep + 2)]
+```
+
+```{r}
+X <- data_exam[, 3:ncol(data_exam)]
+to_rm <- findLinearCombos(X)$remove
+nb_descr <- ncol(X)
+to_keep <- setdiff(1:nb_descr, to_rm)
+data_exam <- data_exam[, c(1:2, to_keep + 2)]
+```
+
+## Visualisation rapide des données
+
+### Les descripteurs
+
+```{r}
+X <- data_exam[, 3:ncol(data_exam)]
+```
+
+```{r}
+boxplot(X)
+boxplot(scale(X), las = 2)
+```
+
+```{r}
+X_cor <- cor(X)
+corrplot(X_cor)
+```
+
+### Les variables à prédire
+
+```{r}
+Y <- data_exam[, 1:2]
+```
+
+```{r}
+y <- Y[,1]
+par(mfrow = c(1, 2))
+boxplot(y)
+hist(y)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+y_prc <- Y[, 2]
+table(y_prc)
+```
+
+# Méthodes non supervisées
+
+## Analyse en Composante Principale
+
+```{r}
+data_PCA <- PCA(data_exam, quanti.sup = 1, quali.sup = 2, graph = FALSE)
+barplot(data_PCA$eig[, 2], las = 2)
+```
+
+```{r}
+plot(data_PCA, choix = "var", invisible = c("quali", "quanti.sup"))
+plot(data_PCA, choix = "var", invisible = c("quali", "quanti.sup"), axes = c(1, 3))
+```
+
+```{r}
+plot(data_PCA, choix = "ind", invisible = c("quali", "quanti.sup"), cex = 0.5)
+plot(data_PCA, choix = "ind", 
+     invisible = c("quali", "quanti.sup"), 
+     axes = c(1, 3), cex = 0.5)
+```
+
+## Classification hiérarchique
+
+```{r hclust}
+## !!!! à modifier
+nb_cluster <- 4
+## !!!! fin
+X_dist <- dist(scale(X))
+X_hclust <- hclust(X_dist, method = "ward.D2")
+plot(X_hclust, hang = -1, cex = 0.5)
+X_cut <- cutree(X_hclust, k = nb_cluster)
+table(X_cut)
+```
+
+```{r}
+X_cmds <- cmdscale(X_dist)
+plot(X_cmds, pch = 20, col = X_cut,main="hclust",xlab="dimension 1", ylab="dimension 2")
+abline(h = 0, v = 0)
+text(X_cmds, labels = rownames(X_cmds), 
+     cex = 0.5, adj = 1, col = X_cut)
+```
+
+## kmeans
+
+```{r kmeans}
+X_kmeans <- kmeans(scale(X), centers = 2)
+var_intra <- X_kmeans$totss
+for (i in 2:20) {
+  var_intra <- c(var_intra, kmeans(scale(X), centers = i)$tot.withinss)
+}
+plot(1:20, var_intra, type = "b",main="Variance intra groupe en fonction du nombre de cluster",xlab="Nombre de clusters",ylab="Variance intra cluster")
+abline(v=5,lty=2, col="blue")
+```
+
+```{r}
+## !!!! à modifier
+nb_cluster=5
+## !!!! fin
+X_kmeans <- kmeans(scale(X), centers = nb_cluster,nstart = 50)
+table(X_kmeans$cluster)
+```
+
+```{r}
+X_dist <- dist(scale(X))
+X_cmds <- cmdscale(X_dist)
+plot(X_cmds, pch = 20, col = X_kmeans$cluster,main="Visualisation des clusters K-means en multidimensionnel scaling",xlab="Dimension 1",ylab = "Dimension 2")
+abline(h = 0, v = 0,lty=2)
+text(X_cmds, labels = rownames(X_cmds), 
+     cex = 0.5, adj = 1, col = X_kmeans$cluster)
+#legend("topleft", legend = c("cluster 1","cluster 2","cluster #3","cluster 4","cluster 5"), col=X_kmeans$cluster, cex=0.8,pch=16)
+```
+
+## comparaison
+
+```{r}
+par(mfrow = c(1, 2))
+plot(X_cmds, pch = 20, col = X_cut, 
+     xlab="Dimension 1", ylab="Dimension 2",main="Graphique en MSD, hclust")
+abline(h = 0, v = 0)
+text(X_cmds, labels = rownames(X_cmds), 
+     cex = 0.5, adj = 1, col = X_cut)
+plot(X_cmds, pch = 20, col = X_kmeans$cluster,
+     xlab="Dimension 1", ylab="Dimension 2",main="Graphique en MSD, Kmeans")
+abline(h = 0, v = 0)
+text(X_cmds, labels = rownames(X_cmds), 
+     cex = 0.5, adj = 1, col = X_kmeans$cluster)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+table(X_cut, X_kmeans$cluster)
+```
+
+# Méthodes supervisées
+
+## Echantillons train / test
+
+```{r app_test}
+to_train <- sample(x = 1:nrow(data_exam),
+                   size = (2*nrow(data_exam)/3))
+data_test <- data_exam[-to_train,]
+data_app <- data_exam[to_train,]
+```
+
+## Régression linéaire multiple
+
+```{r}
+X_app <- data_app[, 3: ncol(data_app)]
+Y_app <- data_app[, 1]
+XY_app <- data.frame(Cl = Y_app, X_app)
+X_test <- data_test[, 3: ncol(data_test)]
+Y_test <- data_test[, 1]
+XY_test <- data.frame(Cl = Y_test, X_test)
+```
+
+```{r}
+p_value <- NULL
+for (i in 2:ncol(XY_app)) {
+  temp <- data.frame(XY_app[, c(1, i)])
+  lm_temp <- lm(Cl ~ ., data = temp)
+  p_value <- c(p_value, summary(lm_temp)$coefficients[2, 4])
+}
+names(p_value) <- colnames(X_app)
+hist(p_value, breaks = 20,main="Histogramme des p_values")
+```
+
+
+```{r}
+###!!! à modifier
+seuil=0.05
+###!!! fin
+to_keep <- which(p_value < seuil)
+XY_app <- XY_app[, c(1, to_keep + 1)]
+XY_test <- XY_test[, c(1, to_keep + 1)]
+```
+
+```{r}
+XY_lm <- lm(Cl ~ ., data = XY_app)
+summary(XY_lm)
+```
+
+```{r}
+XY_lm_step <- step(XY_lm)  # choisis les "meilleures" variables pour le modÃ¨le
+summary(XY_lm_step) # Conserve les var les plus informatifs
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(XY_lm_step)  # rÃ©siduels (ok, car homoscÃ©dasticitÃ©)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+y_pred_app <- XY_lm_step$fitted.values
+y_obs_app <- XY_app[, 1]
+postResample(y_pred_app, y_obs_app)
+y_pred_test <- predict(XY_lm_step, newdata = XY_test)
+y_obs_test <- XY_test[, 1]
+postResample(y_pred_test, y_obs_test) # PrÃ©dit trÃ¨s trÃ¨s mal le jeu de test?
+
+```
+
+```{r}
+x_lim <- c(min(y_obs_app, y_obs_test), max(y_obs_app, y_obs_test))
+y_lim <- c(min(y_pred_app, y_pred_test), max(y_pred_app, y_pred_test))
+par(mfrow = c(1, 2))
+plot(y_obs_app, y_pred_app, xlim = x_lim, ylim = y_lim)
+plot(y_obs_test, y_pred_test, xlim = x_lim, ylim = y_lim)
+par(mfrow = c(1, 1))
+```
+
+## Régression logistique multiple
+
+```{r}
+X_app <- data_app[, 3: ncol(data_app)]
+Y_app <- data_app[, 2]
+XY_app <- data.frame(Cl = Y_app, X_app)
+X_test <- data_test[, 3: ncol(data_test)]
+Y_test <- data_test[, 2]
+XY_test <- data.frame(Cl = Y_test, X_test)
+```
+
+```{r}
+p_value <- NULL
+for (i in 2:ncol(XY_app)) {
+  ttest_temp <- t.test(XY_app[, i] ~ XY_app[, "Cl"])
+  p_value <- c(p_value, ttest_temp$p.value)
+}
+names(p_value) <- colnames(X_app)
+hist(p_value, breaks = 20)
+```
+
+```{r}
+###!!! à modifier
+seuil <- 0.05
+###!!! fin
+to_keep <- which(p_value < seuil)
+XY_app <- XY_app[, c(1, to_keep + 1)]
+XY_test <- XY_test[, c(1, to_keep + 1)]
+```
+
+```{r}
+XY_glm <- glm(Cl ~ ., data = XY_app, family = "binomial")
+summary(XY_glm)
+```
+
+```{r}
+XY_glm_step <- step(XY_glm)
+summary(XY_glm_step)
+```
+
+```{r}
+y_pred_app <- predict(XY_glm_step, newdata = XY_app, type = "response")
+y_pred_app <- as.factor(ifelse(y_pred_app < 0.5, 0, 1))
+y_obs_app <- XY_app[, 1]
+confusionMatrix(y_pred_app, y_obs_app)
+y_pred_test <- predict(XY_glm_step, newdata = XY_test, class = "response")
+y_pred_test <- as.factor(ifelse(y_pred_test < 0.5, 0, 1))
+y_obs_test <- XY_test[, 1]
+confusionMatrix(y_pred_test, y_obs_test)
+```
+
+```{r}
+Yglm_pred_prob <- predict(XY_glm_step, newdata = XY_app, type = "response")
+Yglm_roc <- roc(XY_app$Cl == "1", Yglm_pred_prob)
+plot(1 - Yglm_roc$specificities, Yglm_roc$sensitivities, type = "l",
+     xlab = "1 - Sp", ylab = "Se")
+abline(a = 0, b = 1, lty = 2)
+print(Yglm_roc$auc)
+```
+
+```{r}
+Yglm_pred_prob <- predict(XY_glm_step, newdata = XY_test, type = "response")
+Yglm_roc <- roc(XY_test$Cl == "1", Yglm_pred_prob)
+plot(1 - Yglm_roc$specificities, Yglm_roc$sensitivities, type = "l",
+     xlab = "1 - Sp", ylab = "Se")
+abline(a = 0, b = 1, lty = 2)
+print(Yglm_roc$auc)
+```
+
+## arbre de partitionnement
+
+### rpart en régression
+
+```{r}
+X_app <- data_app[, 3: ncol(data_app)]
+Y_app <- data_app[, 1]
+XY_app <- data.frame(Cl = Y_app, X_app)
+X_test <- data_test[, 3: ncol(data_test)]
+Y_test <- data_test[, 1]
+XY_test <- data.frame(Cl = Y_test, X_test)
+```
+
+```{r}
+###!!! à modifier
+seed = @@@@
+###!!! fin
+set.seed(seed)
+XY_rpart <- rpart(Cl ~ ., data = XY_app, method = "anova")
+prp(XY_rpart, extra = 1)
+```
+
+```{r}
+###!!! à modifier
+seuil_cp <- 0.05
+###!!! fin
+printcp(XY_rpart)
+plotcp(XY_rpart)
+XY_rpart_prune <- prune(XY_rpart, cp = seuil_cp)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+prp(XY_rpart, extra=1, main ="complet")
+prp(XY_rpart_prune, extra=1, main ="pruned")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+y_pred_app <- predict(XY_rpart, data = XY_app)
+y_obs_app <- XY_app[, 1]
+postResample(y_pred_app, y_obs_app)
+y_pred_test <- predict(XY_rpart, newdata = XY_test)
+y_obs_test <- XY_test[, 1]
+postResample(y_pred_test, y_obs_test)
+```
+
+```{r}
+x_lim <- c(min(y_obs_app, y_obs_test), max(y_obs_app, y_obs_test))
+y_lim <- c(min(y_pred_app, y_pred_test), max(y_pred_app, y_pred_test))
+par(mfrow = c(1, 2))
+plot(y_obs_app, y_pred_app, xlim = x_lim, ylim = y_lim)
+plot(y_obs_test, y_pred_test, xlim = x_lim, ylim = y_lim)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+y_pred_app <- predict(XY_rpart_prune, data = XY_app)
+y_obs_app <- XY_app[, 1]
+postResample(y_pred_app, y_obs_app)
+y_pred_test <- predict(XY_rpart_prune, newdata = XY_test)
+y_obs_test <- XY_test[, 1]
+postResample(y_pred_test, y_obs_test)
+```
+
+```{r}
+x_lim <- c(min(y_obs_app, y_obs_test), max(y_obs_app, y_obs_test))
+y_lim <- c(min(y_pred_app, y_pred_test), max(y_pred_app, y_pred_test))
+par(mfrow = c(1, 2))
+plot(y_obs_app, y_pred_app, xlim = x_lim, ylim = y_lim)
+plot(y_obs_test, y_pred_test, xlim = x_lim, ylim = y_lim)
+par(mfrow = c(1, 1))
+```
+
+### rpart en discrimination
+
+```{r}
+X_app <- data_app[, 3: ncol(data_app)]
+Y_app <- data_app[, 2]
+XY_app <- data.frame(Cl = Y_app, X_app)
+X_test <- data_test[, 3: ncol(data_test)]
+Y_test <- data_test[, 2]
+XY_test <- data.frame(Cl = Y_test, X_test)
+```
+
+```{r}
+XY_rpart <- rpart(Cl ~ ., data = XY_app, method = "class")
+prp(XY_rpart, extra = 2)
+```
+
+```{r}
+###!!! à modifier
+seuil_cp <- 0.05
+###!!! fin
+printcp(XY_rpart)
+plotcp(XY_rpart)
+XY_rpart_prune <- prune(XY_rpart, cp = seuil_cp)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+prp(XY_rpart, main ="complet")
+prp(XY_rpart_prune, main ="pruned")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+ypred_app <- predict(XY_rpart, newdata = XY_app, type = "class")
+ypred_test <- predict(XY_rpart, newdata = XY_test, type = "class")
+confusionMatrix(data = ypred_app, 
+                reference = XY_app[, "Cl"], positive = "1")
+confusionMatrix(data = ypred_test, 
+                reference = XY_test[, "Cl"], positive = "1")
+```
+
+```{r}
+ypred_app <- predict(XY_rpart, newdata = XY_app, type = "prob")
+ypred_test <- predict(XY_rpart, newdata = XY_test, type = "prob")
+Yrpart_roc <- roc(response = XY_app[, "Cl"] == "1", 
+                  predictor = ypred_app[, 1])
+plot(1 - Yrpart_roc$specificities,  Yrpart_roc$sensitivities,
+     type = "l", xlab = "1 - Sp", ylab = "Se",
+     main = "ROC curve on train set")
+abline(a = 0, b = 1, lty = 2)
+Yrpart_roc <- roc(response = XY_test[, "Cl"] == "1", 
+                  predictor = ypred_test[, 1])
+lines(1 - Yrpart_roc$specificities,  Yrpart_roc$sensitivities, col = "red")
+```
+
+```{r}
+ypred_app_prune <- predict(XY_rpart_prune, newdata = XY_app, type = "class")
+ypred_test_prune <- predict(XY_rpart_prune, newdata = XY_test, type = "class")
+confusionMatrix(data = ypred_app_prune, 
+                reference = XY_app[, "Cl"], positive = "1")
+confusionMatrix(data = ypred_test_prune, 
+                reference = XY_test[, "Cl"], positive = "1")
+```
+
+```{r}
+ypred_app_prune <- predict(XY_rpart_prune, newdata = XY_app, type = "prob")
+ypred_test_prune <- predict(XY_rpart_prune, newdata = XY_test, type = "prob")
+Yrpart_roc_prune <- roc(response = XY_app[, "Cl"] == "1", 
+                  predictor = ypred_app_prune[, 1])
+plot(1 - Yrpart_roc_prune$specificities,  Yrpart_roc_prune$sensitivities,
+     type = "l", xlab = "1 - Sp", ylab = "Se",
+     main = "ROC curve on train set")
+abline(a = 0, b = 1, lty = 2)
+Yrpart_roc_prune <- roc(response = XY_test[, "Cl"] == "1", 
+                  predictor = ypred_test_prune[, 1])
+lines(1 - Yrpart_roc_prune$specificities,  Yrpart_roc_prune$sensitivities, col = "red")
+```
+
+
+```{r session_info}
+## Print the complete list of libraries + versions used in this session
+sessionInfo()
+```
+
