@@ -20,7 +20,7 @@ Ce projet a pour objectif d'analyser et de prédire la capacité de médicaments
 ### Packages nécessaires :
 
 ```r
-install.packages(c("ggplot2", "cluster", "factoextra", "rpart", "caret", "dplyr"))
+install.packages(c("caret", "rpart", "randomForest", "FactoMineR", "corrplot", "pROC", "rpart.plot"))
 ```
 
 ## Méthodes utilisées
